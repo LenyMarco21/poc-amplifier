@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Unlicense OR CC0-1.0
  */
 
+ /*** Includes *******************************************************************/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -26,33 +28,79 @@
 #include "esp_avrc_api.h"
 
 #include "driver/gpio.h"
-
 #include "codec/tad5212.h"
+#include "amplifier/tpa3255.h"
 
-#define RESET_PIN GPIO_NUM_32
+/*** Defines *******************************************************************/
+
+#define MAIN_TAG    "MAIN"
+#define A2DP_TAG    "A2DP"
+#define AVRCP_TAG   "AVRCP"
+
+#define MAIN_TICK_DELAY_MS              10
+#define DEBUG_PRINT_DELAY_MS            500
+
+/* Pins definition */
+#define SUBWOOFER_AMP_RESET_GPIO        GPIO_NUM_33
+#define SUBWOOFER_AMP_FAULT_GPIO        GPIO_NUM_34
+#define SUBWOOFER_AMP_OTW_CLIP_GPIO     GPIO_NUM_35
+
+#define SPEAKER_AMP_RESET_GPIO          GPIO_NUM_33
+#define SPEAKER_AMP_FAULT_GPIO          GPIO_NUM_34
+#define SPEAKER_AMP_OTW_CLIP_GPIO       GPIO_NUM_35
+
+#define I2C0_SDA_GPIO                   GPIO_NUM_21     /* GPIO number for I2C SDA */
+#define I2C0_SCL_GPIO                   GPIO_NUM_22     /* GPIO number for I2C SCL */
+
+/* I2C configuration */
+#define I2C0_FREQUENCY                  100000          /* 100kHz I2C frequency */
+#define I2C0_PORT                       I2C_NUM_0       /* I2C port number */
+
+/* Codec I2C addresses */
+#define TAD5212_I2C_ADDRESS_SUBWOOFER   TAD5212_I2C_ADDR_SHORT
+#define TAD5212_I2C_ADDRESS_SPEAKERS    TAD5212_I2C_ADDR_PD_4_7K
+
+/*** Static variables *******************************************************************/
 
 /* device name */
-static const char local_device_name[] = CONFIG_EXAMPLE_LOCAL_DEVICE_NAME;
+static const char local_device_name[] = "Symphony 2.1";
+
+/* I2C0 bus handle */
+static i2c_master_bus_handle_t I2C0_bus_handle;
+
+/* TAD5212 for subwoofer */
+static tad5212_handle_t subwoofer_codec;
+
+/* TAD5212 for 2-way speakers */
+static tad5212_handle_t speakers_codec;
+
+/* TPA3255 for subwoofer */
+static tpa3255_device_t subwoofer_amplifier;
+
+/* TPA3255 for speakers */
+static tpa3255_device_t speaker_amplifier;
+
+/*** Enumerations *********************************************************************/
 
 /* event for stack up */
-enum {
+enum 
+{
     BT_APP_EVT_STACK_UP = 0,
 };
 
-/********************************
- * STATIC FUNCTION DECLARATIONS
- *******************************/
+/*** Static prototypes *******************************************************************/
 
 /* Device callback function */
 static void bt_app_dev_cb(esp_bt_dev_cb_event_t event, esp_bt_dev_cb_param_t *param);
+
 /* GAP callback function */
 static void bt_app_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param);
+
 /* handler for bluetooth stack enabled events */
 static void bt_av_hdl_stack_evt(uint16_t event, void *p_param);
 
-/*******************************
- * STATIC FUNCTION DEFINITIONS
- ******************************/
+/*** Static functions *******************************************************************/
+
 static char *bda2str(uint8_t * bda, char *str, size_t size)
 {
     if (bda == NULL || str == NULL || size < 18) {
@@ -82,6 +130,7 @@ static void bt_app_dev_cb(esp_bt_dev_cb_event_t event, esp_bt_dev_cb_param_t *pa
     }
     }
 }
+
 
 static void bt_app_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 {
@@ -218,6 +267,8 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
+    bt_app_av_init();
+
     /*
      * This example only uses the functions of Classical Bluetooth.
      * So release the controller memory for Bluetooth Low Energy.
@@ -270,28 +321,153 @@ void app_main(void)
     /* bluetooth device name, connection mode and profile set up */
     bt_app_work_dispatch(bt_av_hdl_stack_evt, BT_APP_EVT_STACK_UP, NULL, 0, NULL);
 
-    gpio_reset_pin(RESET_PIN);
-    gpio_set_direction(RESET_PIN, GPIO_MODE_OUTPUT);
+    /* Initialize subwoofer amplifier */
+    if (tpa3255_gpio_init(&subwoofer_amplifier, SUBWOOFER_AMP_RESET_GPIO, SUBWOOFER_AMP_FAULT_GPIO, SUBWOOFER_AMP_OTW_CLIP_GPIO) != ESP_OK)
+    {
+        ESP_LOGE(BT_AV_TAG, "Failed to initialize audio amplifiers");
+    }
+    else
+    {
+        ESP_LOGI(BT_AV_TAG, "Audio amplifiers initialized successfully");
+    }
+
+    /* Initialize speaker amplifier */
+    if (tpa3255_gpio_init(&speaker_amplifier, SPEAKER_AMP_RESET_GPIO, SPEAKER_AMP_FAULT_GPIO, SPEAKER_AMP_OTW_CLIP_GPIO) != ESP_OK) 
+    {
+        ESP_LOGE(BT_AV_TAG, "Failed to initialize Speaker amplifier GPIOs");
+    }
+    else
+    {
+        ESP_LOGI(BT_AV_TAG, "Speaker amplifier GPIOs initialized successfully");
+    }
 
     /* Delay of 200 ms after power-up before accessing the device */
     esp_rom_delay_us(200000); 
 
-    if (tad5212_init(I2C_NUM_0, GPIO_NUM_21, GPIO_NUM_22, 100000, TAD5212_I2C_ADDR_SHORT) != ESP_OK) 
+    /* Initialize I2C0 bus */
+    //I2C0_bus_handle = i2c_master_bus_create(I2C_NUM_0, I2C0_FREQUENCY, I2C0_SDA, I2C0_SCL);
+
+    /* Initialize TAD5212 Subwoofer codec */
+
+
+    tad5212_i2c_addr_t subwoofer_i2c_addr = TAD5212_I2C_ADDRESS_SUBWOOFER;
+
+    if (tad5212_init(I2C0_PORT, I2C0_SDA_GPIO, I2C0_SCL_GPIO, I2C0_FREQUENCY, subwoofer_i2c_addr) != ESP_OK) 
     {
-        ESP_LOGE(BT_AV_TAG, "Failed to initialize TAD5212 codec");
-        gpio_set_level(RESET_PIN, 0);
+        ESP_LOGE(BT_AV_TAG, "Failed to initialize Subwoofer codec");
     }
-    else 
+    else
     {
-        ESP_LOGI(BT_AV_TAG, "TAD5212 codec initialized successfully");
-        gpio_set_level(RESET_PIN, 1);
+        ESP_LOGI(BT_AV_TAG, "Subwoofer codec initialized successfully");
     }
 
+    /* Initialize TAD5212 Speakers codec */
+    /*
+    tad5212_i2c_addr_t speakers_i2c_addr = TAD5212_I2C_ADDRESS_SPEAKERS;
+
+    if (tad5212_init(I2C0_PORT, I2C0_SDA_GPIO, I2C0_SCL_GPIO, I2C0_FREQUENCY, speakers_i2c_addr) != ESP_OK) 
+    {
+        ESP_LOGE(BT_AV_TAG, "Failed to initialize Speakers codec");
+    }
+    else
+    {
+        ESP_LOGI(BT_AV_TAG, "Speakers codec initialized successfully");
+    }
+*/
     while(1) 
     {
+        static uint8_t previous_volume = 0;
+        static bt_audio_state_t previous_audio_state = BT_AUDIO_STOPPED;
+
         #ifdef TAD5212_DEBUG
-        tad5212_dac_status();
-        vTaskDelay(500);
+        static uint32_t debug_tick_count = 0;
+        if (debug_tick_count < DEBUG_PRINT_DELAY_MS / MAIN_TICK_DELAY_MS)
+            debug_tick_count++;
+        else
+        {
+            debug_tick_count = 0;
+            tad5212_dac_status();
+        }
         #endif
+
+        // Check amplifiers status
+        tpa3255_fault_flags_t fault_status = tpa3255_gpio_get_status(&subwoofer_amplifier);
+
+        switch (fault_status)
+        {
+            case OTE_OLP_UVP_FAULT:
+                ESP_LOGE(TPA3255_TAG, "SUBWOOFER AMP Fault: Over Temperature/Over Load/Under Voltage Protection");
+                break; 
+
+            case OLP_UVP_FAULT:
+                ESP_LOGE(TPA3255_TAG, "SUBWOOFER AMP Fault: Over Load/Under Voltage Protection");
+                break;
+
+            case OTW_WARNING:
+                bt_volume_set_by_local_host(0x3F); // Reduce volume to 50%
+                previous_volume = 0x3F; 
+                ESP_LOGW(TPA3255_TAG, "SUBWOOFER AMP Warning: Over Temperature/Clipping - Volume Reduced to 50%%");
+                break;
+
+            default:
+                break;
+
+        }
+
+        fault_status = tpa3255_gpio_get_status(&speaker_amplifier);
+
+        switch (fault_status)
+        {
+            case OTE_OLP_UVP_FAULT:
+                ESP_LOGE(TPA3255_TAG, "SPEAKER AMP Fault: Over Temperature/Over Load/Under Voltage Protection");
+                break; 
+
+            case OLP_UVP_FAULT:
+                ESP_LOGE(TPA3255_TAG, "SPEAKER AMP Fault: Over Load/Under Voltage Protection");
+                break;
+
+            case OTW_WARNING:
+                bt_volume_set_by_local_host(0x3F); // Reduce volume to 50%
+                previous_volume = 0x3F; 
+                ESP_LOGW(TPA3255_TAG, "SPEAKER AMP Warning: Over Temperature/Clipping - Volume Reduced to 50%%");
+                break;
+
+            default:
+                break;
+
+        }
+
+        /* Polling on volume change */
+        uint8_t volume = bt_app_get_volume();
+
+        /* Polling on audio state change */
+        bt_audio_state_t audio_state = bt_app_get_audio_state();
+
+        if (audio_state == BT_AUDIO_PLAYING)
+        {
+            if (volume != previous_volume)
+            {
+                uint16_t normalized_vol = volume * 100 / 0x7f;
+                tad5212_set_volume(TAD5212_CHANNEL_BOTH, normalized_vol);
+                previous_volume = volume;
+            }
+        }
+
+        /* De-pop mechanism */
+        if (audio_state != previous_audio_state)
+        {
+            if (audio_state == BT_AUDIO_PLAYING) 
+            {
+                uint16_t normalized_vol = volume * 100 / 0x7f;
+                tad5212_set_volume(TAD5212_CHANNEL_BOTH, 0);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                tpa3255_gpio_set_reset(&subwoofer_amplifier, false);
+                tpa3255_gpio_set_reset(&speaker_amplifier, false);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                tad5212_set_volume(TAD5212_CHANNEL_BOTH, normalized_vol);
+            }
+            previous_audio_state = audio_state;
+        }
+        vTaskDelay(pdMS_TO_TICKS(MAIN_TICK_DELAY_MS));
     }
 }

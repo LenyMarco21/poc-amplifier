@@ -1,7 +1,7 @@
 /**
  * Written by Leny Marcolini - ESEO - 2026
  *
- * Definition of TAD5212 registers - Page 15 - Biquad filters
+ * Definition of TAD5212 registers - Page 15 - Biquad filters 1 - 6
  * 
  * No licence
  */
@@ -13,11 +13,11 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+/*** Enumerations ***********************************************************************/
+
 /* TAD5212 register map */
 typedef enum
 {
-    REG_PAGE_CFG        = 0x00, /* Device page register */
-
     /* DAC Biquad 1 registers */
 
     REG_DAC_BQ1_N0_B1   = 0x08, /* DAC Biquad 1 Numerator Coefficient 0 MSB */

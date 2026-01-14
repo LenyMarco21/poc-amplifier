@@ -28,7 +28,6 @@
 #endif
 
 #include "sys/lock.h"
-#include "codec/tad5212.h"
 
 /* AVRCP used transaction labels */
 #define APP_RC_CT_TL_GET_CAPS            (0)
@@ -60,8 +59,6 @@ static void bt_i2s_driver_install(void);
 static void bt_i2s_driver_uninstall(void);
 /* set volume by remote controller */
 static void volume_set_by_controller(uint8_t volume);
-/* set volume by local host */
-static void volume_set_by_local_host(uint8_t volume);
 /* a2dp event handler */
 static void bt_av_hdl_a2d_evt(uint16_t event, void *p_param);
 /* avrc controller event handler */
@@ -73,19 +70,27 @@ static void bt_av_hdl_avrc_tg_evt(uint16_t event, void *p_param);
  * STATIC VARIABLE DEFINITIONS
  ******************************/
 
-static uint32_t s_pkt_cnt = 0;               /* count for audio packet */
-static esp_a2d_audio_state_t s_audio_state = ESP_A2D_AUDIO_STATE_STOPPED;
-                                             /* audio stream datapath state */
+/* count for audio packet */
+static uint32_t s_pkt_cnt = 0;
+
+/* audio stream datapath state */
+static _lock_t s_audio_state_lock;
+static bt_audio_state_t s_audio_state = BT_AUDIO_STOPPED;
+
+/* connection state in string */
 static const char *s_a2d_conn_state_str[] = {"Disconnected", "Connecting", "Connected", "Disconnecting"};
-                                             /* connection state in string */
+
+/* audio stream datapath state in string */                                             
 static const char *s_a2d_audio_state_str[] = {"Suspended", "Started"};
-                                             /* audio stream datapath state in string */
+
+/* AVRC target notification capability bit mask */                                             
 static esp_avrc_rn_evt_cap_mask_t s_avrc_peer_rn_cap;
-                                             /* AVRC target notification capability bit mask */
+
+/* Volume */
 static _lock_t s_volume_lock;
-static TaskHandle_t s_vcs_task_hdl = NULL;    /* handle for volume change simulation task */
 static uint8_t s_volume = 0;                 /* local volume value */
 static bool s_volume_notify;                 /* notify volume change or not */
+
 #ifndef CONFIG_EXAMPLE_A2DP_SINK_OUTPUT_INTERNAL_DAC
 i2s_chan_handle_t tx_chan = NULL;
 #else
@@ -251,18 +256,16 @@ static void volume_set_by_controller(uint8_t volume)
     /* set the volume in protection of lock */
     _lock_acquire(&s_volume_lock);
     s_volume = volume;
-    tad5212_set_volume(TAD5212_CHANNEL_BOTH, s_volume);  // Convert 0-127 to 0-100
     _lock_release(&s_volume_lock);
 }
 
-static void volume_set_by_local_host(uint8_t volume)
+void bt_volume_set_by_local_host(uint8_t volume)
 {
     ESP_LOGI(BT_RC_TG_TAG, "Volume is set locally to: %"PRIu32"%%", (uint32_t)volume * 100 / 0x7f);
 
     /* set the volume in protection of lock */
     _lock_acquire(&s_volume_lock);
     s_volume = volume;
-    tad5212_set_volume(TAD5212_CHANNEL_BOTH, s_volume);  // Convert 0-127 to 0-100
     _lock_release(&s_volume_lock);
 
     /* send notification response to remote AVRCP controller */
@@ -303,7 +306,26 @@ static void bt_av_hdl_a2d_evt(uint16_t event, void *p_param)
     case ESP_A2D_AUDIO_STATE_EVT: {
         a2d = (esp_a2d_cb_param_t *)(p_param);
         ESP_LOGI(BT_AV_TAG, "A2DP audio state: %s", s_a2d_audio_state_str[a2d->audio_stat.state]);
-        s_audio_state = a2d->audio_stat.state;
+        bt_audio_state_t new_state;
+        switch (a2d->audio_stat.state)
+        {
+            case ESP_A2D_AUDIO_STATE_STARTED:
+                new_state = BT_AUDIO_PLAYING;
+                break;
+
+            case ESP_A2D_AUDIO_STATE_STOPPED:
+                new_state = BT_AUDIO_STOPPED;
+                break;
+
+            default:
+                new_state = BT_AUDIO_STOPPED;
+                break;
+        }
+
+        _lock_acquire(&s_audio_state_lock);
+        s_audio_state = new_state;
+        _lock_release(&s_audio_state_lock);
+
         if (ESP_A2D_AUDIO_STATE_STARTED == a2d->audio_stat.state) {
             s_pkt_cnt = 0;
         }
@@ -553,9 +575,6 @@ static void bt_av_hdl_avrc_tg_evt(uint16_t event, void *p_param)
         uint8_t *bda = rc->conn_stat.remote_bda;
         ESP_LOGI(BT_RC_TG_TAG, "AVRC conn_state evt: state %d, [%02x:%02x:%02x:%02x:%02x:%02x]",
                  rc->conn_stat.connected, bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
-        if (rc->conn_stat.connected == false) {
-            vTaskDelete(s_vcs_task_hdl);
-        }
         break;
     }
     /* when passthrough commanded, this event comes */
@@ -701,4 +720,45 @@ void bt_app_rc_tg_cb(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param
         ESP_LOGE(BT_RC_TG_TAG, "Invalid AVRC event: %d", event);
         break;
     }
+}
+
+/**
+ * \brief  Initializes AVRCP 
+ */
+void bt_app_av_init(void)
+{
+    _lock_init(&s_volume_lock);
+    _lock_init(&s_audio_state_lock);
+
+    s_volume = 0;
+    s_audio_state = BT_AUDIO_STOPPED;
+    s_volume_notify = false;
+}
+
+/**
+ * \brief  get volume 
+ * 
+ * @return volume value (0-127)
+ */
+uint8_t bt_app_get_volume(void)
+{
+    uint8_t vol;
+    _lock_acquire(&s_volume_lock);
+    vol = s_volume;
+    _lock_release(&s_volume_lock);
+    return vol;
+}
+
+/**
+ * \brief  get audio running state
+ * 
+ * @return BT_AUDIO_STOPPED or BT_AUDIO_PLAYING
+ */
+bt_audio_state_t bt_app_get_audio_state(void)
+{
+    bt_audio_state_t ret;
+    _lock_acquire(&s_audio_state_lock);
+    ret = s_audio_state;
+    _lock_release(&s_audio_state_lock);
+    return ret;
 }

@@ -1,11 +1,15 @@
 /**
  * Written by Leny Marcolini
  *
+ * Driver of TAD5212 audio CODEC
+ * 
  * No licence
  */
 
 #ifndef __TAD5212_H__
 #define __TAD5212_H__
+
+/*** Includes **************************************************************************/
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -21,9 +25,17 @@
 #define TAD5212_TAG    "TAD5212"
 
 /* Debug mode */
-// #define TAD5212_DEBUG
+#define TAD5212_DEBUG
 
 /*** Enumerations *********************************************************************/
+
+/* TAD5212 configuration types */
+typedef enum
+{
+    TAD5212_CONFIG_STEREO = 0,
+    TAD5212_CONFIG_SUBWOOFER,
+}
+tad5212_config_select_t;
 
 /* TAD5212 channels selection */
 typedef enum
@@ -45,6 +57,16 @@ typedef enum
 tad5212_i2c_addr_t;
 
 /*** Structures ***********************************************************************/
+
+typedef struct 
+{
+    i2c_master_bus_handle_t* bus;
+    i2c_master_dev_handle_t dev;
+    tad5212_i2c_addr_t      addr;
+    _lock_t                 lock;
+    bool                    initialized;
+} 
+tad5212_handle_t;
 
 /*** Extern functions *****************************************************************/
 

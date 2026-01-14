@@ -7,14 +7,36 @@
 #ifndef __BT_APP_AV_H__
 #define __BT_APP_AV_H__
 
+/*** Includes *********************************************************************/
+
 #include <stdint.h>
+#include <stdbool.h>
 #include "esp_a2dp_api.h"
 #include "esp_avrc_api.h"
+
+/*** Defines **********************************************************************/
 
 /* log tags */
 #define BT_AV_TAG       "BT_AV"
 #define BT_RC_TG_TAG    "RC_TG"
 #define BT_RC_CT_TAG    "RC_CT"
+
+/*** Enumerations *****************************************************************/
+
+typedef enum 
+{
+    BT_AUDIO_STOPPED = 0,
+    BT_AUDIO_SUSPEND,
+    BT_AUDIO_PLAYING,
+} 
+bt_audio_state_t;
+
+/*** Public functions *************************************************************/
+
+/**
+ * \brief  Initializes AVRCP 
+ */
+void bt_app_av_init(void);
 
 /**
  * @brief  callback function for A2DP sink
@@ -55,5 +77,26 @@ void bt_app_rc_ct_cb(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param
  * @param [in] param  callback parameter
  */
 void bt_app_rc_tg_cb(esp_avrc_tg_cb_event_t event, esp_avrc_tg_cb_param_t *param);
+
+/**
+ * @brief  set volume by local host
+ *
+ * @param [in] volume  volume value (0-127)
+ */
+void bt_volume_set_by_local_host(uint8_t volume);
+
+/**
+ * \brief  get volume 
+ * 
+ * @return volume value (0-127)
+ */
+uint8_t bt_app_get_volume(void);
+
+/**
+ * \brief  get audio running state
+ * 
+ * @return BT_AUDIO_STOPPED or BT_AUDIO_PLAYING
+ */
+bt_audio_state_t bt_app_get_audio_state(void);
 
 #endif /* __BT_APP_AV_H__*/
