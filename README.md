@@ -1,82 +1,74 @@
-| Supported Targets | ESP32 |
+| Cibles supportées | ESP32-DevKitC |
 | ----------------- | ----- |
 
-A2DP-SINK EXAMPLE
+Amplificateur Audio Bluetooth 
 ======================
 
-Example of A2DP audio sink role
+Ce projet repose sur l'utilisation de la librairie Bluetooth A2DP/AVRCP d'Espressif afin de recevoir de la musique en bluetooth depuis un smartphone ou ordinateur et la diffuser ensuite sur des haut-parleurs.
 
-This is the example of API implementing Advanced Audio Distribution Profile to receive an audio stream.
+Il s'agit d'un système audio 2.1 (2 enceintes satellites gauche/droite + 1 caisson de basse).
 
-This example involves the use of Bluetooth legacy profile A2DP for audio stream reception, AVRCP for media information notifications, and I2S for audio stream output interface.
+Le seul protocole de compression supporté à ce jour est SBC (44.1kHz / 16 bits), largement suffisant pour un projet audio amateur.
 
-Applications such as bluetooth speakers can take advantage of this example as a reference of basic functionalities.
+## Fonctionnement général
 
-## How to use this example
+### I/O Hardware
 
-### Hardware Required
+| Broche    |I/O    | Signal       | Description                               |
+| :-------- | :---- | :----------- | :---------------------------------------- |
+| GPIO21    | I/O   | I2C SDA      | Data I2C                                  |
+| GPIO22    | O     | I2C SCL      | Clock I2C                                 |
+| GPIO25    | O     | I2S DATA     | Data I2S                                  |
+| GPIO26    | O     | I2S LRCK     | Clock Synchro L/R I2S                     |
+| GPIO27    | O     | I2S BCK      | Clock Principale I2S                      |
+| GPIO33    | O     | /RESET       | Reset de l'amplificateur                  |
+| GPIO34    | I     | /FAULT       | Faute de l'amplificateur                  |
+| GPIO35    | I     | /CLIP        | Ecretage ou surchauffe de l'amplificateur |
 
-To play the sound, there is a need of loudspeaker and possibly an external I2S codec. Otherwise the example will only show a count of audio data packets received silently. Internal DAC can be selected and in this case external I2S codec may not be needed.
+### Codec Audio
 
-For the I2S codec, pick whatever chip or board works for you; this code was written using a PCM5102 chip, but other I2S boards and chips will probably work as well. The default I2S connections are shown below, but these can be changed in menuconfig:
+#### Caractéristiques
+Le codec audio utilisé pour convertir le flux PCM stéréo I2S en signal analogique est le TAD5212 de Texas Instruments.
 
-| ESP pin   | I2S signal   |
-| :-------- | :----------- |
-| GPIO22    | LRCK         |
-| GPIO25    | DATA         |
-| GPIO26    | BCK          |
+Ce codec intègre :
+* Résolution 32 bits
+* Sampling rate jusqu'à 768 kHz
+* 2 entrées microphone différentielles
+* 2 sorties casque différentielles
+* Rapport signal/bruit sur les sorties DAC de 120dB
+* 1 Melangeur par voie
+* 3 Filtres biquadratiques (IIR 2ème ordre) configurables par voie
+* 1 Filtre passe haut IIR 1er ordre configurable par voie
+* 1 Filtre d'interpolation configurable par voie 
 
-If the internal DAC is selected, analog audio will be available on GPIO25 and GPIO26. The output resolution on these pins will always be limited to 8 bit because of the internal structure of the DACs.
+En somme, il s'agit d'un IC audio pro dont les capacités sont assez impressionanntes.
 
-### Configure the project
+Celui-ci est piloté en I2C pour attaquer ses registres internes (16 pages de 128 octets de registre chacune)
 
-```
-idf.py menuconfig
-```
+#### Fonctionnement logiciel
 
-* Choose external I2S codec or internal DAC for audio output, and configure the output PINs under A2DP Example Configuration
+Le driver logiciel propose 2 modes de configuration :
+* `COMMON` : configuration stéréo 2 voies (gauche et droite) biquad HPF 150Hz
+* `SUBWOOFER` : configuration mono 1 voie (moyenne de gauche et droite) biquad LPF 150Hz
 
-* For AVRCP CT Cover Art feature, is enabled by default, we can disable it by unselecting menuconfig option `Component config --> Bluetooth --> Bluedroid Options --> Classic Bluetooth --> AVRCP Features --> AVRCP CT Cover Art`. This example will try to use AVRCP CT Cover Art feature, get cover art image and count the image size if peer device support, this can be disable in `A2DP Example Configuration --> Use AVRCP CT Cover Art Feature`.
+Le volume est piloté de -60dB à 0dB par step de 0.6dB (100 valeurs).
 
-### Build and Flash
+### Amplificateur Audio
 
-Build the project and flash it to the board, then run monitor tool to view serial output.
+L'amplificateur audio utilisé est le TPA3255 de Texas Instruments.
 
-```
-idf.py -p PORT flash monitor
-```
+Celui-ci intègre 2 entrées différentielles pour 2 sorties différentielles de 315W chacune. 
 
-(To exit the serial monitor, type ``Ctrl-]``.)
+En configuration l'IC en mono voie, la puissance de sortie atteint 600W.
 
-## Example Output
+Sa tension d'entrée admissible est comprise entre 18V et 51V.
 
-After the program is started, the example starts inquiry scan and page scan, awaiting being discovered and connected. Other bluetooth devices such as smart phones can discover a device named "ESP_SPEAKER". A smartphone or another ESP-IDF example of A2DP source can be used to connect to the local device.
+Il présente 3 signaux utiles pour le logiciel :
+* /RESET : désactive les sorties de l'amplificateur
+* /FAULT : indique un défaut
+* /CLIP_OTW : indique un écrêtage de la sortie ou un problème de température
 
-Once A2DP connection is set up, there will be a notification message with the remote device's bluetooth MAC address like the following:
 
-```
-I (106427) BT_AV: A2DP connection state: Connected, [64:a2:f9:69:57:a4]
-```
 
-If a smartphone is used to connect to local device, starting to play music with an APP will result in the transmission of audio stream. The transmitting of audio stream will be visible in the application log including a count of audio data packets, like this:
 
-```
-I (120627) BT_AV: A2DP audio state: Started
-I (122697) BT_AV: Audio packet count 100
-I (124697) BT_AV: Audio packet count 200
-I (126697) BT_AV: Audio packet count 300
-I (128697) BT_AV: Audio packet count 400
-```
-
-The output when receiving a cover art image:
-
-```
-I (53349) RC_CT: AVRC metadata rsp: attribute id 0x80, 1000748
-I (53639) RC_CT: Cover Art Client final data event, image size: 14118 bytes
-```
-
-Also, the sound will be heard if a loudspeaker is connected and possible external I2S codec is correctly configured. For ESP32 A2DP source example, the sound is noise as the audio source generates the samples with a random sequence.
-
-## Troubleshooting
-* For current stage, the supported audio codec in ESP32 A2DP is SBC. SBC data stream is transmitted to A2DP sink and then decoded into PCM samples as output. The PCM data format is normally of 44.1kHz sampling rate, two-channel 16-bit sample stream. Other SBC configurations in ESP32 A2DP sink is supported but need additional modifications of protocol stack settings.
-* As a usage limitation, ESP32 A2DP sink can support at most one connection with remote A2DP source devices. Also, A2DP sink cannot be used together with A2DP source at the same time, but can be used with other profiles such as SPP and HFP.
+ 

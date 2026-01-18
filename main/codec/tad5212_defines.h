@@ -19,7 +19,7 @@
 #define TAD5212_DAC_MIN_VOLUME          81
 
 /* Maximum DAC volume (0dB) */
-#define TAD5212_DAC_MAX_VOLUME          201
+#define TAD5212_DAC_MAX_VOLUME          211
 
 /* Volume step */
 #define TAD5212_DAC_VOLUME_STEP         ((TAD5212_DAC_MAX_VOLUME - TAD5212_DAC_MIN_VOLUME) / 100.0)

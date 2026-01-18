@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "a2dp_sink",
-    "project_version":    "1",
+    "project_version":    "f5ad44f-dirty",
     "project_path":       "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink",
     "idf_path":           "C:/Espressif/releases/esp-idf-v5.5.1",
     "build_dir":          "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink/build",
@@ -625,7 +625,7 @@
             "managed_reqs": [],
             "managed_priv_reqs": [],
             "file": "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink/build/esp-idf/main/libmain.a",
-            "sources": [ "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink/main/bt_app_av.c", "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink/main/bt_app_core.c", "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink/main/main.c", "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink/main/codec/tad5212.c" ],
+            "sources": [ "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink/main/bt_app_av.c", "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink/main/bt_app_core.c", "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink/main/main.c", "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink/main/codec/tad5212.c", "C:/Users/l.marcolini/ESEO/EOC/POC_ESP/a2dp_sink/main/amplifier/tpa3255.c" ],
             "include_dirs": [ "." ]
         },
         "mbedtls": {

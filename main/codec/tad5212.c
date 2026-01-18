@@ -11,6 +11,7 @@
 #include "tad5212.h"
 #include "sys/lock.h"
 
+#include "configurations/tad5212_common_config.h"
 #include "configurations/tad5212_subwoofer_config.h"
 
 /*** Defines ***********************************************************************/
@@ -27,70 +28,44 @@
 
 /*** Static variables ***********************************************************************/
 
-/* Initialization flag */
-static bool initialized = false;
-
-/* Protection lock */
-static _lock_t lock;
-
-/* I2C bus port */
-static i2c_port_t i2c_port;
-
-/* I2C device address */
-static tad5212_i2c_addr_t device_addr;
-
-/* I2C bus handle */
-static i2c_master_bus_handle_t bus_handle;
-
-/* I2C static buffer */
-static i2c_master_dev_handle_t device_handle;
-
 /*** Prototypes *****************************************************************************/
 
 /**
- *  \brief Initialize the I2C control interface.
- *  \param i2c_port I2C port number
- *  \param gpio_sda GPIO number for I2C SDA
- *  \param gpio_scl GPIO number for I2C SCL
- *  \param i2c_freq I2C frequency in Hz
- *  \param i2c_addr I2C address of the TAD5212 device
- *  \return ESP_OK on success, error code otherwise.
+ * \brief Write a 1 byte value to a register of the TAD5212 device.
+ * \param device Pointer to TAD5212 handle
+ * \param reg Register address to write.
+ * \param value Value to write to the register.
+ * \return ESP_OK on success, error code otherwise.
  */
-inline static esp_err_t init_i2c_interface(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_freq, tad5212_i2c_addr_t i2c_addr);
+static esp_err_t write_1b_register(tad5212_handle_t* device, uint8_t reg, uint8_t value);
+
+
+/**
+ * \brief Write a 4 byte value to a register of the TAD5212 device.
+ * \param device Pointer to TAD5212 handle
+ * \param reg Register address to write.
+ * \param value Value to write to the register.
+ * \return ESP_OK on success, error code otherwise.
+ */
+static esp_err_t write_4b_register(tad5212_handle_t* device, uint8_t reg, uint32_t value);
 
 
 /** 
- *  \brief Write a 1 byte value to a register of the TAD5212 device.
- *  \param reg Register address to write.
- *  \param value Value to write to the register.
- *  \return ESP_OK on success, error code otherwise.
- */
-static esp_err_t write_1b_register(uint8_t reg, uint8_t value);
-
-
-/** 
- *  \brief Write a 4 bytes value to a register of the TAD5212 device.
- *  \param reg Register address to write.
- *  \param value Value to write to the register.
- *  \return ESP_OK on success, error code otherwise.
- */
-static esp_err_t write_4b_register(uint8_t reg, uint32_t value);
-
-
-/** \brief Read a 1 byte register from the TAD5212 device.
- *
+ *  \brief Read a 1 byte register from the TAD5212 device.
+ *  \param device Pointer to TAD5212 handle
  *  \param reg Register address to read.
  *  \param value Pointer to store the value read from the register.
  *  \return ESP_OK on success, error code otherwise.
  */
-static esp_err_t read_1b_register(uint8_t reg, uint8_t *value);
+static esp_err_t read_1b_register(tad5212_handle_t* device, uint8_t reg, uint8_t *value);
 
 
 /** 
  *  \brief Select the register page.
+ *  \param device Pointer to TAD5212 handle
  *  \param page Page number to select.
  */
-inline static esp_err_t select_page(uint8_t page);
+inline static esp_err_t select_page(tad5212_handle_t* device, uint8_t page);
 
 
 /** \brief Check if a command requires a delay after execution.
@@ -115,7 +90,7 @@ inline static bool page_requires_4bytes_transaction(uint8_t page);
  *  \param coeffs Biquad filter coefficients
  *  \return ESP_OK on success, error code otherwise.
  */
-esp_err_t tad5212_set_biquad_coeff(tad5212_i2c_addr_t i2c_addr, tad5212_biquad_filter_t filter, tad5212_biquad_coeffs_t coeffs);
+esp_err_t tad5212_set_biquad_coeff(tad5212_handle_t* device, tad5212_biquad_filter_t filter, tad5212_biquad_coeffs_t coeffs);
 
 
 /**
@@ -125,89 +100,33 @@ esp_err_t tad5212_set_biquad_coeff(tad5212_i2c_addr_t i2c_addr, tad5212_biquad_f
  *  \param coeffs Mixer coefficients
  *  \return ESP_OK on success, error code otherwise.
  */
-esp_err_t tad5212_set_mixer_coeff(tad5212_i2c_addr_t i2c_addr, tad5212_mixer_t mixer, tad5212_mixer_coeffs_t coeffs);
+esp_err_t tad5212_set_mixer_coeff(tad5212_handle_t* device, tad5212_mixer_t mixer, tad5212_mixer_coeffs_t coeffs);
 
 
 /*** Static functions ***********************************************************************/
 
 /**
- *  \brief Initialize the I2C control interface.
- *  \param i2c_port I2C port number
- *  \param gpio_sda GPIO number for I2C SDA
- *  \param gpio_scl GPIO number for I2C SCL
- *  \param i2c_freq I2C frequency in Hz
- *  \param i2c_addr I2C address of the TAD5212 device
- *  \return ESP_OK on success, error code otherwise.
+ * \brief Write a 1 byte value to a register of the TAD5212 device.
+ * \param device Pointer to TAD5212 handle
+ * \param reg Register address to write.
+ * \param value Value to write to the register.
+ * \return ESP_OK on success, error code otherwise.
  */
-inline static esp_err_t init_i2c_interface(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_freq, tad5212_i2c_addr_t i2c_addr)
-{    
-    esp_err_t status;
-
-    device_addr = i2c_addr;
-
-    /* Create bus only once */
-    if (bus_handle == NULL)
-    {
-        i2c_master_bus_config_t bus_config = {
-            .clk_source = I2C_CLK_SRC_DEFAULT,
-            .i2c_port = i2c_port,
-            .scl_io_num = gpio_scl,
-            .sda_io_num = gpio_sda,
-            .glitch_ignore_cnt = 7,
-            .flags.enable_internal_pullup = true,
-        };
-
-        status = i2c_new_master_bus(&bus_config, &bus_handle);
-
-        if (status != ESP_OK)
-        {
-            ESP_LOGE(TAD5212_TAG, "I2C bus init failed: %s", esp_err_to_name(status));
-            bus_handle = NULL;
-            return status;
-        }
-    }
-
-    /* Create device only once */
-    if (device_handle == NULL)
-    {
-        i2c_device_config_t device_config = {
-            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address = i2c_addr,
-            .scl_speed_hz = i2c_freq,
-        };
-
-        status = i2c_master_bus_add_device(bus_handle, &device_config, &device_handle);
-
-        if (status != ESP_OK)
-        {
-            ESP_LOGE(TAD5212_TAG, "I2C device init failed: %s", esp_err_to_name(status));
-            device_handle = NULL;
-            return status;
-        }
-    }
-
-    return ESP_OK;
-}
-
-
-/** 
- *  \brief Write a 1 byte value to a register of the TAD5212 device.
- *  \param reg Register address to write.
- *  \param value Value to write to the register.
- *  \return ESP_OK on success, error code otherwise.
- */
-static esp_err_t write_1b_register(uint8_t reg, uint8_t value)
+static esp_err_t write_1b_register(tad5212_handle_t* device, uint8_t reg, uint8_t value)
 {
     /* Check I2C device handler pointer address */
-    if (!device_handle) 
+    if (device == NULL || device->bus == NULL || device->dev == NULL)
     {
-        ESP_LOGE(TAD5212_TAG, "I2C device or bus handle is NULL");
+        ESP_LOGE(TAD5212_TAG, "TAD5212 device handler not initialized");
         return ESP_ERR_INVALID_ARG;
     }
 
     /* Write operation*/
     const uint8_t out[] = { reg, value };
-    esp_err_t ret = i2c_master_transmit(device_handle, out, sizeof(out), TAD5212_I2C_WRITE_TIMEOUT_MS);
+
+    _lock_acquire(&device->lock);
+    esp_err_t ret = i2c_master_transmit(device->dev, out, sizeof(out), TAD5212_I2C_WRITE_TIMEOUT_MS);
+    _lock_release(&device->lock);
 
     if (ret != ESP_OK)
     {
@@ -219,18 +138,19 @@ static esp_err_t write_1b_register(uint8_t reg, uint8_t value)
 }
 
 
-/** 
- *  \brief Write a value to a register of the TAD5212 device.
- *  \param reg Register address to write.
- *  \param value Value to write to the register.
- *  \return ESP_OK on success, error code otherwise.
+/**
+ * \brief Write a 4 byte value to a register of the TAD5212 device.
+ * \param device Pointer to TAD5212 handle
+ * \param reg Register address to write.
+ * \param value Value to write to the register.
+ * \return ESP_OK on success, error code otherwise.
  */
-static esp_err_t write_4b_register(uint8_t reg, uint32_t value)
+static esp_err_t write_4b_register(tad5212_handle_t* device, uint8_t reg, uint32_t value)
 {
     /* Check I2C device handler pointer address */
-    if (!device_handle) 
+    if (device == NULL || device->bus == NULL || device->dev == NULL)
     {
-        ESP_LOGE(TAD5212_TAG, "I2C device or bus handle is NULL");
+        ESP_LOGE(TAD5212_TAG, "TAD5212 device handler not initialized");
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -245,7 +165,9 @@ static esp_err_t write_4b_register(uint8_t reg, uint32_t value)
     };
 
     /* Write operation*/
-    esp_err_t ret = i2c_master_transmit(device_handle, out, sizeof(out), TAD5212_I2C_WRITE_TIMEOUT_MS);
+    _lock_acquire(&device->lock);
+    esp_err_t ret = i2c_master_transmit(device->dev, out, sizeof(out), TAD5212_I2C_WRITE_TIMEOUT_MS);
+    _lock_release(&device->lock);
 
     if (ret != ESP_OK)
     {
@@ -258,17 +180,17 @@ static esp_err_t write_4b_register(uint8_t reg, uint32_t value)
 
 
 /** \brief Read a 1 byte register from the TAD5212 device.
- *
+ *  \param device Pointer to TAD5212 handle
  *  \param reg Register address to read.
  *  \param value Pointer to store the value read from the register.
  *  \return ESP_OK on success, error code otherwise.
  */
-static esp_err_t read_1b_register(uint8_t reg, uint8_t *value)
+static esp_err_t read_1b_register(tad5212_handle_t* device, uint8_t reg, uint8_t *value)
 {
     /* Check I2C device handler pointer address */
-    if (!device_handle) 
+    if (device == NULL || device->bus == NULL || device->dev == NULL)
     {
-        ESP_LOGE(TAD5212_TAG, "I2C device or bus handle is NULL");
+        ESP_LOGE(TAD5212_TAG, "TAD5212 device handler not initialized");
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -281,7 +203,10 @@ static esp_err_t read_1b_register(uint8_t reg, uint8_t *value)
 
     /* Read operation */
     const uint8_t out[] = { reg };
-    esp_err_t ret = i2c_master_transmit_receive(device_handle, out, sizeof(out), value, 1, TAD5212_I2C_READ_TIMEOUT_MS);
+
+    _lock_acquire(&device->lock);
+    esp_err_t ret = i2c_master_transmit_receive(device->dev, out, sizeof(out), value, 1, TAD5212_I2C_READ_TIMEOUT_MS);
+    _lock_release(&device->lock);
 
     if (ret != ESP_OK)
     {
@@ -295,11 +220,12 @@ static esp_err_t read_1b_register(uint8_t reg, uint8_t *value)
 
 /** 
  *  \brief Select the register page.
+ *  \param device Pointer to TAD5212 handle
  *  \param page Page number to select.
  */
-inline static esp_err_t select_page(uint8_t page)
+inline static esp_err_t select_page(tad5212_handle_t* device, uint8_t page)
 {
-    return write_1b_register(REG_PAGE_CFG, page);
+    return write_1b_register(device, REG_PAGE_CFG, page);
 }
 
 
@@ -329,37 +255,72 @@ inline static bool page_requires_4bytes_transaction(uint8_t page)
 
 /**
  *  \brief Initialize the TAD5212 codec
- *  \param i2c_port I2C port number
- *  \param gpio_sda GPIO number for I2C SDA
- *  \param gpio_scl GPIO number for I2C SCL
- *  \param i2c_freq I2C frequency in Hz
+ *  \param device TAD5212 device
+ *  \param i2c_bus_handle I2C bus handler
  *  \param i2c_addr I2C address of the TAD5212 device
  *  \return ESP_OK on success, error code otherwise.
  */
-esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_freq, tad5212_i2c_addr_t i2c_addr)
+esp_err_t tad5212_init(tad5212_handle_t* device, i2c_master_bus_handle_t i2c_bus_handle, tad5212_i2c_addr_t i2c_addr, tad5212_config_select_t cfg)
 {
     esp_err_t status;
     
+    if (device == NULL)
+    {
+        ESP_LOGE(TAD5212_TAG, "Device handler NULL");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     /* Check device initialization state */
-    if (initialized == true) 
+    if (device->initialized == true) 
     {
         ESP_LOGE(TAD5212_TAG, "Device already initialized");
         return ESP_ERR_INVALID_STATE;
     }
 
-    _lock_init(&lock);
+    _lock_init(&device->lock);
 
     /* Initialize I2C interface */
-    status = init_i2c_interface(i2c_port, gpio_sda, gpio_scl, i2c_freq, i2c_addr);
+    if (i2c_bus_handle == NULL)
+    {
+        ESP_LOGE(TAD5212_TAG, "I2C bus handle NULL");
+        return ESP_ERR_INVALID_ARG;
+    }
+    else
+    {
+        device->bus = i2c_bus_handle;
+    }
+
+    if (i2c_addr != TAD5212_I2C_ADDR_SHORT && 
+        i2c_addr != TAD5212_I2C_ADDR_PD_4_7K &&
+        i2c_addr != TAD5212_I2C_ADDR_PU_4_7K && 
+        i2c_addr != TAD5212_I2C_ADDR_PU_22K)
+    {
+        ESP_LOGE(TAD5212_TAG, "TAD5212 I2C address unknown");
+        return ESP_ERR_INVALID_ARG;
+    }
+    else
+    {
+        device->addr = i2c_addr;
+    }
+
+    /* Create device only once */
+    i2c_device_config_t device_config = 
+    {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = i2c_addr,
+        .scl_speed_hz = 100000,
+    };
+
+    status = i2c_master_bus_add_device(device->bus, &device_config, &device->dev);
 
     if (status != ESP_OK)
     {
-        ESP_LOGE(TAD5212_TAG, "I2C interface initialization failed: %s", esp_err_to_name(status));
+        ESP_LOGE(TAD5212_TAG, "I2C device init failed: %s", esp_err_to_name(status));
         return status;
     }
 
     /* Selects page 0 for registers adressing */
-    status = select_page(TAD5212_PAGE_0);
+    status = select_page(device, TAD5212_PAGE_0);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to select register page 0: %s", esp_err_to_name(status));
@@ -367,7 +328,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Performs software reset */
-    status = write_1b_register(REG_SW_RESET, COMMON_CFG_SW_RESET.data);
+    status = write_1b_register(device, REG_SW_RESET, COMMON_CFG_SW_RESET.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write SW_RESET register: %s", esp_err_to_name(status));
@@ -378,7 +339,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     esp_rom_delay_us(10000);  
 
     /* Selects page 0 for registers adressing */
-    status = select_page(TAD5212_PAGE_0);
+    status = select_page(device, TAD5212_PAGE_0);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to select register page 0: %s", esp_err_to_name(status));
@@ -386,7 +347,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
     
     /* Configuration of device miscellaneous settings */
-    status = write_1b_register(REG_DEV_MISC_CFG, COMMON_CFG_DEV_MISC_CFG_P0.data);
+    status = write_1b_register(device, REG_DEV_MISC_CFG, COMMON_CFG_DEV_MISC_CFG_P0.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write DEV_MISC_CFG register: %s", esp_err_to_name(status));
@@ -397,7 +358,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     esp_rom_delay_us(10000);  
 
     /* Configuration of the device DAC de-pop */
-    status = write_1b_register(REG_DAC_CFG_A0, COMMON_CFG_DAC_CFG_A0.data);
+    status = write_1b_register(device, REG_DAC_CFG_A0, COMMON_CFG_DAC_CFG_A0.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write DAC_CFG_A0 register: %s", esp_err_to_name(status));
@@ -405,7 +366,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of the device DAC de-pop 2 */
-    status = write_1b_register(REG_MISC_CFG0, COMMON_CFG_MISC_CFG0.data);
+    status = write_1b_register(device, REG_MISC_CFG0, COMMON_CFG_MISC_CFG0.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write MISC_CFGG0 register: %s", esp_err_to_name(status));
@@ -413,7 +374,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of DOUT output */
-    status = write_1b_register(REG_INTF_CFG1, COMMON_CFG_INTF_CFG1.data);
+    status = write_1b_register(device, REG_INTF_CFG1, COMMON_CFG_INTF_CFG1.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write INTF_CFG1 register: %s", esp_err_to_name(status));
@@ -421,7 +382,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of data inputs MUX ASI */
-    status = write_1b_register(REG_ASI_CFG1, COMMON_CFG_ASI_CFG1.data);
+    status = write_1b_register(device, REG_ASI_CFG1, COMMON_CFG_ASI_CFG1.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write ASI_CFG1 register: %s", esp_err_to_name(status));
@@ -429,7 +390,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of Primary Audio Serial Interface */
-    status = write_1b_register(REG_PASI_CFG0, COMMON_CFG_PASI_CFG0.data);
+    status = write_1b_register(device, REG_PASI_CFG0, COMMON_CFG_PASI_CFG0.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write PASI_CFG0 register: %s", esp_err_to_name(status));
@@ -437,7 +398,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of Primary Audio Serial Interface RX Channel 1 */
-    status = write_1b_register(REG_PASI_RX_CH1_CFG, COMMON_CFG_PASI_RX_CH1_CFG.data);
+    status = write_1b_register(device, REG_PASI_RX_CH1_CFG, COMMON_CFG_PASI_RX_CH1_CFG.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write PASI_RX_CH1_CFG register: %s", esp_err_to_name(status));
@@ -445,7 +406,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of Primary Audio Serial Interface RX Channel 2 */
-    status = write_1b_register(REG_PASI_RX_CH2_CFG, COMMON_CFG_PASI_RX_CH2_CFG.data);
+    status = write_1b_register(device, REG_PASI_RX_CH2_CFG, COMMON_CFG_PASI_RX_CH2_CFG.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write PASI_RX_CH2_CFG register: %s", esp_err_to_name(status));
@@ -453,7 +414,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of DAC Channel 1 */
-    status = write_1b_register(REG_OUT1X_CFG0, COMMON_CFG_OUT1X_CFG0.data);
+    status = write_1b_register(device, REG_OUT1X_CFG0, COMMON_CFG_OUT1X_CFG0.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write OUT1X_CFG0 register: %s", esp_err_to_name(status));
@@ -461,7 +422,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of DAC Channel 1 OUT1P as line out driver */
-    status = write_1b_register(REG_OUT1X_CFG1, COMMON_CFG_OUT1X_CFG1.data);
+    status = write_1b_register(device, REG_OUT1X_CFG1, COMMON_CFG_OUT1X_CFG1.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write OUT1X_CFG1 register: %s", esp_err_to_name(status));
@@ -469,7 +430,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of DAC Channel 1 OUT1M as line out driver */
-    status = write_1b_register(REG_OUT1X_CFG2, COMMON_CFG_OUT1X_CFG2.data);
+    status = write_1b_register(device, REG_OUT1X_CFG2, COMMON_CFG_OUT1X_CFG2.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write OUT1X_CFG2 register: %s", esp_err_to_name(status));
@@ -477,7 +438,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* DAC 1 Volume configuration set to mute */
-    status = write_1b_register(REG_DAC_CH1A_CFG0, COMMON_CFG_DAC_CH1A_CFG0.data);
+    status = write_1b_register(device, REG_DAC_CH1A_CFG0, COMMON_CFG_DAC_CH1A_CFG0.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write DAC_CH1A_CFG0 register: %s", esp_err_to_name(status));
@@ -485,7 +446,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of DAC Channel 2 */
-    status = write_1b_register(REG_OUT2X_CFG0, COMMON_CFG_OUT2X_CFG0.data);
+    status = write_1b_register(device, REG_OUT2X_CFG0, COMMON_CFG_OUT2X_CFG0.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write OUT2X_CFG0 register: %s", esp_err_to_name(status));
@@ -493,7 +454,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of DAC Channel 2 OUT2P as line out driver */
-    status = write_1b_register(REG_OUT2X_CFG1, COMMON_CFG_OUT2X_CFG1.data);
+    status = write_1b_register(device, REG_OUT2X_CFG1, COMMON_CFG_OUT2X_CFG1.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write OUT2X_CFG1 register: %s", esp_err_to_name(status));
@@ -501,7 +462,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Configuration of DAC Channel 2 OUT2M as line out driver */
-    status = write_1b_register(REG_OUT2X_CFG2, COMMON_CFG_OUT2X_CFG2.data);
+    status = write_1b_register(device, REG_OUT2X_CFG2, COMMON_CFG_OUT2X_CFG2.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write OUT2X_CFG2 register: %s", esp_err_to_name(status));
@@ -509,7 +470,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* DAC 2 Volume configuration set to mute */
-    status = write_1b_register(REG_DAC_CH2A_CFG0, COMMON_CFG_DAC_CH2A_CFG0.data);
+    status = write_1b_register(device, REG_DAC_CH2A_CFG0, COMMON_CFG_DAC_CH2A_CFG0.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write DAC_CH2A_CFG0 register: %s", esp_err_to_name(status));
@@ -517,10 +478,10 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Subwoofer configuration settings load */
-    if (i2c_addr != TAD5212_I2C_ADDR_SHORT) 
+    if (cfg == TAD5212_CONFIG_SUBWOOFER) 
     {
         /* Selects page 1 for registers adressing */
-        status = select_page(TAD5212_PAGE_1);
+        status = select_page(device, TAD5212_PAGE_1);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to select register page 1: %s", esp_err_to_name(status));
@@ -528,7 +489,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
         }
 
         /* DSP configuration */
-        status = write_1b_register(REG_MIXER_CFG0, SUBWOOFER_CFG_MIXER_CFG0.data);
+        status = write_1b_register(device, REG_MIXER_CFG0, SUBWOOFER_CFG_MIXER_CFG0.data);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to write SUBWOOFER_CFG_MIXER_CFG0 register: %s", esp_err_to_name(status));
@@ -536,14 +497,14 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
         }
 
         /* Mixer configuration */
-        status = tad5212_set_mixer_coeff(TAD5212_I2C_ADDR_PU_22K, TAD5212_ASI_DIN_MIX_ASI_CH1, TAD5212_MIXER_RDAC_DIV_2);
+        status = tad5212_set_mixer_coeff(device, TAD5212_ASI_DIN_MIX_ASI_CH1, TAD5212_MIXER_RDAC_DIV_2);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to load mixer L channel gain settings: %s", esp_err_to_name(status));
             return status;
         }
 
-        status = tad5212_set_mixer_coeff(TAD5212_I2C_ADDR_PU_22K, TAD5212_ASI_DIN_MIX_ASI_CH2, TAD5212_MIXER_RDAC_DIV_2);
+        status = tad5212_set_mixer_coeff(device, TAD5212_ASI_DIN_MIX_ASI_CH2, TAD5212_MIXER_RDAC_DIV_2);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to load mixer R channel gain settings: %s", esp_err_to_name(status));
@@ -551,14 +512,14 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
         }
 
         /* Biquad filters configuration */
-        status = tad5212_set_biquad_coeff(TAD5212_I2C_ADDR_PU_22K, TAD5212_DAC2_BIQUAD_FILTER_1, TAD5212_BIQUAD_LOWPASS_150_HZ);
+        status = tad5212_set_biquad_coeff(device, TAD5212_DAC2_BIQUAD_FILTER_1, TAD5212_BIQUAD_LOWPASS_150_HZ);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to load biquad filter settings: %s", esp_err_to_name(status));
             return status;
         }
 
-        status = tad5212_set_biquad_coeff(TAD5212_I2C_ADDR_PU_22K, TAD5212_DAC2_BIQUAD_FILTER_2, TAD5212_BIQUAD_LOWPASS_150_HZ);
+        status = tad5212_set_biquad_coeff(device, TAD5212_DAC2_BIQUAD_FILTER_2, TAD5212_BIQUAD_LOWPASS_150_HZ);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to load biquad filter settings: %s", esp_err_to_name(status));
@@ -566,7 +527,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
         }
 
         /* Selects page 0 for registers adressing */
-        status = select_page(TAD5212_PAGE_0);
+        status = select_page(device, TAD5212_PAGE_0);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to select register page 0: %s", esp_err_to_name(status));
@@ -574,7 +535,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
         }
 
         /* Enable DAC2 channel */
-        status = write_1b_register(REG_CH_EN, SUBWOOFER_CFG_CH_EN.data);
+        status = write_1b_register(device, REG_CH_EN, SUBWOOFER_CFG_CH_EN.data);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to write CH_EN register: %s", esp_err_to_name(status));
@@ -588,37 +549,37 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     else
     {
         /* Biquad filters configuration */
-        /*
-        status = tad5212_set_biquad_coeff(TAD5212_I2C_ADDR_PU_22K, TAD5212_DAC1_BIQUAD_FILTER_1, TAD5212_BIQUAD_HIGHPASS_120_HZ);
+
+        status = tad5212_set_biquad_coeff(device, TAD5212_DAC1_BIQUAD_FILTER_1, TAD5212_BIQUAD_HIGHPASS_150_HZ);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to load biquad filter settings: %s", esp_err_to_name(status));
             return status;
         }
-*//*
-        status = tad5212_set_biquad_coeff(TAD5212_I2C_ADDR_PU_22K, TAD5212_DAC1_BIQUAD_FILTER_1, TAD5212_BIQUAD_LOWPASS_16000_HZ);
+
+        status = tad5212_set_biquad_coeff(device, TAD5212_DAC1_BIQUAD_FILTER_1, TAD5212_BIQUAD_LOWPASS_16000_HZ);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to load biquad filter settings: %s", esp_err_to_name(status));
             return status;
         }
-*/
-        /*status = tad5212_set_biquad_coeff(TAD5212_I2C_ADDR_PU_22K, TAD5212_DAC2_BIQUAD_FILTER_1, TAD5212_BIQUAD_HIGHPASS_120_HZ);
+
+        status = tad5212_set_biquad_coeff(device, TAD5212_DAC2_BIQUAD_FILTER_1, TAD5212_BIQUAD_HIGHPASS_150_HZ);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to load biquad filter settings: %s", esp_err_to_name(status));
             return status;
         }
-*//*
-        status = tad5212_set_biquad_coeff(TAD5212_I2C_ADDR_PU_22K, TAD5212_DAC2_BIQUAD_FILTER_1, TAD5212_BIQUAD_LOWPASS_16000_HZ);
+
+        status = tad5212_set_biquad_coeff(device, TAD5212_DAC2_BIQUAD_FILTER_1, TAD5212_BIQUAD_LOWPASS_16000_HZ);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to load biquad filter settings: %s", esp_err_to_name(status));
             return status;
         }
-*/
+
         /* Selects page 0 for registers adressing */
-        status = select_page(TAD5212_PAGE_0);
+        status = select_page(device, TAD5212_PAGE_0);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to select register page 0: %s", esp_err_to_name(status));
@@ -626,7 +587,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
         }
 
         /* Enable DAC1 & DAC2 channels */
-        status = write_1b_register(REG_CH_EN, COMMON_CFG_CH_EN.data);
+        status = write_1b_register(device, REG_CH_EN, COMMON_CFG_CH_EN.data);
         if (status != ESP_OK)
         {
             ESP_LOGE(TAD5212_TAG, "Failed to write CH_EN register: %s", esp_err_to_name(status));
@@ -635,7 +596,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* Power up the device */
-    status = write_1b_register(REG_PWR_CFG, COMMON_CFG_PWR_CFG.data);
+    status = write_1b_register(device, REG_PWR_CFG, COMMON_CFG_PWR_CFG.data);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write PWR_CFG register: %s", esp_err_to_name(status));
@@ -643,7 +604,7 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
     }
 
     /* End of initialization */
-    initialized = true;
+    device->initialized = true;
 
     return ESP_OK;
 }
@@ -651,24 +612,25 @@ esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_
 
  /**
   *  \brief Deinitialize the TAD5212 codec
+  *  \param device TAD5212 device
   *  \return ESP_OK on success, error code otherwise.
   */
-esp_err_t tad5212_deinit(void)
+esp_err_t tad5212_deinit(tad5212_handle_t* device)
 {
     /* Check I2C bus initialization state */
-    if (initialized == false) 
+    if (device == NULL || device->initialized == false) 
     {
         ESP_LOGE(TAD5212_TAG, "Device already deinitialized");
         return ESP_ERR_INVALID_STATE;
     }
 
     /* Check I2C bus initialization state */
-    if (device_handle != NULL && bus_handle != NULL)
+    if (device->dev != NULL && device->bus != NULL)
     {
-        i2c_master_bus_rm_device(device_handle);
-        device_handle = NULL;
-        i2c_del_master_bus(bus_handle);
-        bus_handle = NULL;
+        i2c_master_bus_rm_device(device->dev);
+        device->dev = NULL;
+        i2c_del_master_bus(device->bus);
+        device->bus = NULL;
     }
     else
     {
@@ -677,23 +639,30 @@ esp_err_t tad5212_deinit(void)
     }
 
     /* End of deinitialization */
-    initialized = false;
+    device->initialized = false;
 
     return ESP_OK;
 }
 
 
 /** \brief Set biquad filter coefficients
- *  \param channel Channel to set the biquad filter coefficients
+ *  \param device TAD5212 device
  *  \param filter Biquad filter to set the coefficients
  *  \param coeffs Biquad filter coefficients
  *  \return ESP_OK on success, error code otherwise.
  */
-esp_err_t tad5212_set_biquad_coeff(tad5212_i2c_addr_t i2c_addr, tad5212_biquad_filter_t filter, tad5212_biquad_coeffs_t coeffs)
+esp_err_t tad5212_set_biquad_coeff(tad5212_handle_t* device, tad5212_biquad_filter_t filter, tad5212_biquad_coeffs_t coeffs)
 {
     esp_err_t status;
     uint8_t reg_addr;
     uint8_t page;
+
+    /* Check device handler */
+    if (device == NULL) 
+    {
+        ESP_LOGE(TAD5212_TAG, "Device already deinitialized");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     /* Select register address depending on channel */
     switch (filter)
@@ -733,7 +702,7 @@ esp_err_t tad5212_set_biquad_coeff(tad5212_i2c_addr_t i2c_addr, tad5212_biquad_f
     }
 
     /* Selects page for registers addressing */
-    status = select_page(page);
+    status = select_page(device, page);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to select register page %d: %s", page, esp_err_to_name(status));
@@ -741,35 +710,35 @@ esp_err_t tad5212_set_biquad_coeff(tad5212_i2c_addr_t i2c_addr, tad5212_biquad_f
     }
 
     /* Write biquad coefficients */
-    status = write_4b_register(reg_addr, coeffs.n0.value);
+    status = write_4b_register(device, reg_addr, coeffs.n0.value);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write biquad coefficient N0: %s", esp_err_to_name(status));
         return status;
     }
 
-    status = write_4b_register(reg_addr + 4, coeffs.n1.value);
+    status = write_4b_register(device, reg_addr + 4, coeffs.n1.value);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write biquad coefficients N1: %s", esp_err_to_name(status));
         return status;
     }
 
-    status = write_4b_register(reg_addr + 8, coeffs.n2.value);
+    status = write_4b_register(device, reg_addr + 8, coeffs.n2.value);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write biquad coefficients N2: %s", esp_err_to_name(status));
         return status;
     }
 
-    status = write_4b_register(reg_addr + 12, coeffs.d1.value);
+    status = write_4b_register(device, reg_addr + 12, coeffs.d1.value);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write biquad coefficients D1: %s", esp_err_to_name(status));
         return status;
     }
 
-    status = write_4b_register(reg_addr + 16, coeffs.d2.value);
+    status = write_4b_register(device, reg_addr + 16, coeffs.d2.value);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write biquad coefficients D2: %s", esp_err_to_name(status));
@@ -781,15 +750,22 @@ esp_err_t tad5212_set_biquad_coeff(tad5212_i2c_addr_t i2c_addr, tad5212_biquad_f
 
 /**
  *  \brief Set mixer coefficients
- *  \param channel Channel to set the mixer coefficients
+ *  \param device TAD5212 device
  *  \param mixer Mixer to set the coefficients
  *  \param coeffs Mixer coefficients
  *  \return ESP_OK on success, error code otherwise.
  */
-esp_err_t tad5212_set_mixer_coeff(tad5212_i2c_addr_t i2c_addr, tad5212_mixer_t mixer, tad5212_mixer_coeffs_t coeffs)
+esp_err_t tad5212_set_mixer_coeff(tad5212_handle_t* device, tad5212_mixer_t mixer, tad5212_mixer_coeffs_t coeffs)
 {
     esp_err_t status;
     uint8_t reg_addr;
+
+    /* Check device handler */
+    if (device == NULL) 
+    {
+        ESP_LOGE(TAD5212_TAG, "Device already deinitialized");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     /* Select register address depending on channel */
     switch (mixer)
@@ -807,7 +783,7 @@ esp_err_t tad5212_set_mixer_coeff(tad5212_i2c_addr_t i2c_addr, tad5212_mixer_t m
     }
 
     /* Selects page for registers addressing */
-    status = select_page(TAD5212_PAGE_17);
+    status = select_page(device, TAD5212_PAGE_17);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to select register page %d: %s", TAD5212_PAGE_17, esp_err_to_name(status));
@@ -815,14 +791,14 @@ esp_err_t tad5212_set_mixer_coeff(tad5212_i2c_addr_t i2c_addr, tad5212_mixer_t m
     }
 
     /* Write mixer coefficients */
-    status = write_4b_register(reg_addr, (uint32_t)(coeffs.a2.value << 16) + coeffs.a1.value);
+    status = write_4b_register(device, reg_addr, (uint32_t)(coeffs.a2.value << 16) + coeffs.a1.value);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write mixer coefficient A2 + A1: %s", esp_err_to_name(status));
         return status;
     }
 
-    status = write_4b_register(reg_addr + 4, (uint32_t)(coeffs.a4.value << 16) + coeffs.a3.value);
+    status = write_4b_register(device, reg_addr + 4, (uint32_t)(coeffs.a4.value << 16) + coeffs.a3.value);
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write mixer coefficient A4 + A3: %s", esp_err_to_name(status));
@@ -834,19 +810,19 @@ esp_err_t tad5212_set_mixer_coeff(tad5212_i2c_addr_t i2c_addr, tad5212_mixer_t m
 
 /**
  *  \brief Set the volume of the TAD5212 codec
+ *  \param device TAD5212 device
  *  \param channel Channel to set volume
  *  \param volume Volume level (0-100)
  *  \return ESP_OK on success, error code otherwise.
  */
-esp_err_t tad5212_set_volume(tad5212_channel_t channel, uint8_t volume)
+esp_err_t tad5212_set_volume(tad5212_handle_t* device, tad5212_channel_t channel, uint8_t volume)
 {
-    if (initialized == false) 
+    /* Check device handler */
+    if (device == NULL || device->initialized == false) 
     {
-        ESP_LOGE(TAD5212_TAG, "Device not initialized");
+        ESP_LOGE(TAD5212_TAG, "Device already deinitialized");
         return ESP_ERR_INVALID_STATE;
     }
-
-    _lock_acquire(&lock);
 
     // Clamping volume to valid range
     if (volume > 100) volume = 100;
@@ -871,7 +847,7 @@ esp_err_t tad5212_set_volume(tad5212_channel_t channel, uint8_t volume)
             .dac_ch1a_dvol = dvol_value,  /* Channel 1A digital volume control */
         };
 
-        status = write_1b_register(REG_DAC_CH1A_CFG0, dac_ch1a_cfg0.data);
+        status = write_1b_register(device, REG_DAC_CH1A_CFG0, dac_ch1a_cfg0.data);
 
         if (status != ESP_OK)
         {
@@ -888,7 +864,7 @@ esp_err_t tad5212_set_volume(tad5212_channel_t channel, uint8_t volume)
             .dac_ch2a_dvol = dvol_value,  /* Channel 2A digital volume control */
         };
 
-        status = write_1b_register(REG_DAC_CH2A_CFG0, dac_ch2a_cfg0.data);
+        status = write_1b_register(device, REG_DAC_CH2A_CFG0, dac_ch2a_cfg0.data);
 
         if (status != ESP_OK)
         {
@@ -897,33 +873,30 @@ esp_err_t tad5212_set_volume(tad5212_channel_t channel, uint8_t volume)
         }
     }
 
-    _lock_release(&lock);
-
     return ESP_OK;
 }
 
 /**
  *  \brief Swap OUT1 & OUT2 channels of the TAD5212 codec
+ *  \param device TAD5212 device
  *  \return ESP_OK on success, error code otherwise.
  */
-esp_err_t tad5212_swap_channels(void)
+esp_err_t tad5212_swap_channels(tad5212_handle_t* device)
 {
-    if (initialized == false) 
+    /* Check device handler */
+    if (device == NULL || device->initialized == false) 
     {
-        ESP_LOGE(TAD5212_TAG, "Device not initialized");
+        ESP_LOGE(TAD5212_TAG, "Device already deinitialized");
         return ESP_ERR_INVALID_STATE;
     }
 
-    _lock_acquire(&lock);
-
     /* Reading of current register value */
     uint8_t reg_value = 0;
-    esp_err_t status = read_1b_register(REG_DYN_PUPD_CFG, &reg_value);
+    esp_err_t status = read_1b_register(device, REG_DYN_PUPD_CFG, &reg_value);
 
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to read DYN_PUPD_CFG register: %s", esp_err_to_name(status));
-        _lock_release(&lock);
         return status;
     }
 
@@ -931,15 +904,13 @@ esp_err_t tad5212_swap_channels(void)
     ((tad5212_REG_DYN_PUPD_CFG_t*)&reg_value)->dac_ch_swap ^= 0x1;
 
     /* Write the modified register value back */
-    status = write_1b_register(REG_DYN_PUPD_CFG, reg_value);
+    status = write_1b_register(device, REG_DYN_PUPD_CFG, reg_value);
 
     if (status != ESP_OK)
     {
         ESP_LOGE(TAD5212_TAG, "Failed to write DYN_PUPD_CFG register: %s", esp_err_to_name(status));
         return status;
     }
-
-    _lock_release(&lock);
 
     return ESP_OK;
 }
@@ -948,22 +919,25 @@ esp_err_t tad5212_swap_channels(void)
 
 /**
   *  \brief Get the status of the TAD5212 DAC channels
+  *  \param device TAD5212 device
   *  \return ESP_OK on success, error code otherwise.
   */
-esp_err_t tad5212_dac_status(void)
+esp_err_t tad5212_dac_status(tad5212_handle_t* device)
 {
-    /* Check I2C bus initialization state */
-    if (initialized == false) 
+    /* Check device handler */
+    if (device == NULL || device->initialized == false) 
     {
-        ESP_LOGE(TAD5212_TAG, "Device not initialized");
+        ESP_LOGE(TAD5212_TAG, "Device already deinitialized");
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Shitty code... oupsi */
+    ESP_LOGI(TAD5212_TAG, "=====================================");
+    ESP_LOGI(TAD5212_TAG, "TAD5212 : 0x%02x - LOG", device->addr);
+    ESP_LOGI(TAD5212_TAG, "=====================================");
 
     uint8_t reg_value_1;
 
-    esp_err_t status = read_1b_register(REG_DEV_STS0, &reg_value_1);
+    esp_err_t status = read_1b_register(device, REG_DEV_STS0, &reg_value_1);
 
     if (status != ESP_OK)
     {
@@ -976,7 +950,7 @@ esp_err_t tad5212_dac_status(void)
 
     uint8_t reg_value_2;
 
-    status = read_1b_register(REG_DEV_STS1, &reg_value_2);
+    status = read_1b_register(device, REG_DEV_STS1, &reg_value_2);
 
     if (status != ESP_OK)
     {
@@ -1007,7 +981,7 @@ esp_err_t tad5212_dac_status(void)
 
     uint8_t reg_value_3;
 
-    status = read_1b_register(REG_CLK_ERR_STS0, &reg_value_3);
+    status = read_1b_register(device, REG_CLK_ERR_STS0, &reg_value_3);
 
     if (status != ESP_OK)
     {
@@ -1027,7 +1001,7 @@ esp_err_t tad5212_dac_status(void)
 
     uint8_t reg_value_4;
 
-    status = read_1b_register(REG_CLK_ERR_STS1, &reg_value_4);
+    status = read_1b_register(device, REG_CLK_ERR_STS1, &reg_value_4);
 
     if (status != ESP_OK)
     {
@@ -1046,7 +1020,7 @@ esp_err_t tad5212_dac_status(void)
 
     uint8_t reg_value_5;
 
-    status = read_1b_register(REG_CLK_DET_STS0, &reg_value_5);
+    status = read_1b_register(device, REG_CLK_DET_STS0, &reg_value_5);
 
     if (status != ESP_OK)
     {
@@ -1058,7 +1032,7 @@ esp_err_t tad5212_dac_status(void)
 
     uint8_t reg_value_6;
 
-    status = read_1b_register(REG_CLK_DET_STS2, &reg_value_6);
+    status = read_1b_register(device, REG_CLK_DET_STS2, &reg_value_6);
 
     if (status != ESP_OK)
     {
@@ -1068,7 +1042,7 @@ esp_err_t tad5212_dac_status(void)
 
     uint8_t reg_value_7;
 
-    status = read_1b_register(REG_CLK_DET_STS3, &reg_value_7);
+    status = read_1b_register(device, REG_CLK_DET_STS3, &reg_value_7);
 
     if (status != ESP_OK)
     {

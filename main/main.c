@@ -28,6 +28,7 @@
 #include "esp_avrc_api.h"
 
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "codec/tad5212.h"
 #include "amplifier/tpa3255.h"
 
@@ -345,14 +346,28 @@ void app_main(void)
     esp_rom_delay_us(200000); 
 
     /* Initialize I2C0 bus */
-    //I2C0_bus_handle = i2c_master_bus_create(I2C_NUM_0, I2C0_FREQUENCY, I2C0_SDA, I2C0_SCL);
+    i2c_master_bus_config_t I2C0_bus_config = 
+    {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = I2C0_PORT,
+        .scl_io_num = I2C0_SCL_GPIO,
+        .sda_io_num = I2C0_SDA_GPIO,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+
+    i2c_master_bus_handle_t I2C0_bus_handle;
+    esp_err_t status = i2c_new_master_bus(&I2C0_bus_config, &I2C0_bus_handle);
+
+    if (status != ESP_OK)
+    {
+        ESP_LOGE(TAD5212_TAG, "I2C bus init failed: %s", esp_err_to_name(status));
+        I2C0_bus_handle = NULL;
+        return;
+    }
 
     /* Initialize TAD5212 Subwoofer codec */
-
-
-    tad5212_i2c_addr_t subwoofer_i2c_addr = TAD5212_I2C_ADDRESS_SUBWOOFER;
-
-    if (tad5212_init(I2C0_PORT, I2C0_SDA_GPIO, I2C0_SCL_GPIO, I2C0_FREQUENCY, subwoofer_i2c_addr) != ESP_OK) 
+    if (tad5212_init(&subwoofer_codec, I2C0_bus_handle, TAD5212_I2C_ADDRESS_SUBWOOFER, TAD5212_CONFIG_STEREO) != ESP_OK) 
     {
         ESP_LOGE(BT_AV_TAG, "Failed to initialize Subwoofer codec");
     }
@@ -362,10 +377,7 @@ void app_main(void)
     }
 
     /* Initialize TAD5212 Speakers codec */
-    /*
-    tad5212_i2c_addr_t speakers_i2c_addr = TAD5212_I2C_ADDRESS_SPEAKERS;
-
-    if (tad5212_init(I2C0_PORT, I2C0_SDA_GPIO, I2C0_SCL_GPIO, I2C0_FREQUENCY, speakers_i2c_addr) != ESP_OK) 
+    if (tad5212_init(&speakers_codec, I2C0_bus_handle, TAD5212_I2C_ADDRESS_SPEAKERS, TAD5212_CONFIG_STEREO) != ESP_OK) 
     {
         ESP_LOGE(BT_AV_TAG, "Failed to initialize Speakers codec");
     }
@@ -373,7 +385,7 @@ void app_main(void)
     {
         ESP_LOGI(BT_AV_TAG, "Speakers codec initialized successfully");
     }
-*/
+
     while(1) 
     {
         static uint8_t previous_volume = 0;
@@ -386,11 +398,13 @@ void app_main(void)
         else
         {
             debug_tick_count = 0;
-            tad5212_dac_status();
+            tad5212_dac_status(&subwoofer_codec);
+            tad5212_dac_status(&speakers_codec);
         }
         #endif
 
         // Check amplifiers status
+        /*
         tpa3255_fault_flags_t fault_status = tpa3255_gpio_get_status(&subwoofer_amplifier);
 
         switch (fault_status)
@@ -411,7 +425,6 @@ void app_main(void)
 
             default:
                 break;
-
         }
 
         fault_status = tpa3255_gpio_get_status(&speaker_amplifier);
@@ -434,9 +447,8 @@ void app_main(void)
 
             default:
                 break;
-
         }
-
+*/
         /* Polling on volume change */
         uint8_t volume = bt_app_get_volume();
 
@@ -448,7 +460,8 @@ void app_main(void)
             if (volume != previous_volume)
             {
                 uint16_t normalized_vol = volume * 100 / 0x7f;
-                tad5212_set_volume(TAD5212_CHANNEL_BOTH, normalized_vol);
+                tad5212_set_volume(&subwoofer_codec, TAD5212_CHANNEL_BOTH, normalized_vol);
+                tad5212_set_volume(&speakers_codec, TAD5212_CHANNEL_BOTH, normalized_vol);
                 previous_volume = volume;
             }
         }
@@ -458,13 +471,24 @@ void app_main(void)
         {
             if (audio_state == BT_AUDIO_PLAYING) 
             {
+                // Force low volume on reset change to avoid replicating audible artefact
                 uint16_t normalized_vol = volume * 100 / 0x7f;
-                tad5212_set_volume(TAD5212_CHANNEL_BOTH, 0);
+                tad5212_set_volume(&subwoofer_codec, TAD5212_CHANNEL_BOTH, 0);
+                tad5212_set_volume(&speakers_codec, TAD5212_CHANNEL_BOTH, 0);
+
+                // Wait 50ms for audio signal stabilization 
                 vTaskDelay(pdMS_TO_TICKS(50));
+
+                // Enable amplifier
                 tpa3255_gpio_set_reset(&subwoofer_amplifier, false);
                 tpa3255_gpio_set_reset(&speaker_amplifier, false);
+
+                // Wait 50ms for internal circuit stabilization
                 vTaskDelay(pdMS_TO_TICKS(50));
-                tad5212_set_volume(TAD5212_CHANNEL_BOTH, normalized_vol);
+
+                // Play sound at user volume
+                tad5212_set_volume(&subwoofer_codec, TAD5212_CHANNEL_BOTH, normalized_vol);
+                tad5212_set_volume(&speakers_codec, TAD5212_CHANNEL_BOTH, normalized_vol);
             }
             previous_audio_state = audio_state;
         }

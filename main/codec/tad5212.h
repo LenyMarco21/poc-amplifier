@@ -60,7 +60,7 @@ tad5212_i2c_addr_t;
 
 typedef struct 
 {
-    i2c_master_bus_handle_t* bus;
+    i2c_master_bus_handle_t bus;
     i2c_master_dev_handle_t dev;
     tad5212_i2c_addr_t      addr;
     _lock_t                 lock;
@@ -72,21 +72,20 @@ tad5212_handle_t;
 
 /**
  *  \brief Initialize the TAD5212 codec
- *  \param i2c_port I2C port number
- *  \param gpio_sda GPIO number for I2C SDA
- *  \param gpio_scl GPIO number for I2C SCL
- *  \param i2c_freq I2C frequency in Hz
+ *  \param device TAD5212 device
+ *  \param i2c_bus_handle I2C bus handler
  *  \param i2c_addr I2C address of the TAD5212 device
  *  \return ESP_OK on success, error code otherwise.
  */
-esp_err_t tad5212_init(i2c_port_t i2c_port, int gpio_sda, int gpio_scl, int i2c_freq, tad5212_i2c_addr_t i2c_addr);
+esp_err_t tad5212_init(tad5212_handle_t* device, i2c_master_bus_handle_t i2c_bus_handle, tad5212_i2c_addr_t i2c_addr, tad5212_config_select_t cfg);
 
 
 /**
   *  \brief Get the status of the TAD5212 DAC channels
+  *  \param device TAD5212 device
   *  \return ESP_OK on success, error code otherwise.
   */
-esp_err_t tad5212_dac_status(void);
+esp_err_t tad5212_dac_status(tad5212_handle_t* device);
 
 
 /**
@@ -95,20 +94,22 @@ esp_err_t tad5212_dac_status(void);
  *  \param volume Volume level (0-100)
  *  \return ESP_OK on success, error code otherwise.
  */
-esp_err_t tad5212_set_volume(tad5212_channel_t channel, uint8_t volume);
+esp_err_t tad5212_set_volume(tad5212_handle_t* device, tad5212_channel_t channel, uint8_t volume);
 
 
 /**
  *  \brief Swap OUT1 & OUT2 channels of the TAD5212 codec
+ *  \param device TAD5212 device
  *  \return ESP_OK on success, error code otherwise.
  */
-esp_err_t tad5212_swap_channels(void);
+esp_err_t tad5212_swap_channels(tad5212_handle_t* device);
 
 
 /**
  *  \brief Deinitialize the TAD5212 codec
+ *  \param device TAD5212 device
  *  \return ESP_OK on success, error code otherwise.
  */
-esp_err_t tad5212_deinit(void);
+esp_err_t tad5212_deinit(tad5212_handle_t* device);
 
 #endif /* __TAD5212_H__ */
